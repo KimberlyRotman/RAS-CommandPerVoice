@@ -1,13 +1,19 @@
-# pip install faster-whisper sounddevice numpy
+# pip install faster-whisper sounddevice numpy pillow pygame
+import glob
 import os
 import queue
+import random
 import re
 import threading
 import time
 import tkinter as tk
 import unicodedata
 
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+
+import av
 import numpy as np
+import pygame
 import sounddevice as sd
 from faster_whisper import WhisperModel
 from PIL import Image, ImageTk
@@ -18,7 +24,31 @@ MAX_BUFFER_SECONDS = CHUNK_SECONDS * 3  # descarta áudio mais antigo se o proce
 MODEL_SIZE = "small"
 LANGUAGE = "pt"
 CPU_THREADS = os.cpu_count() or 4
-CAMINHO_IMAGEM_OUVINDO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ouvindo.jpg")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PASTA_ROSTOS = os.path.join(BASE_DIR, "rostojose")
+PASTA_HISTORIAS = os.path.join(BASE_DIR, "historinhas")
+IMG_ACORDADO = os.path.join(PASTA_ROSTOS, "joseacordado.png")
+IMG_OUVINDO = os.path.join(PASTA_ROSTOS, "joseouvindo.png")
+IMG_HISTORIA = os.path.join(PASTA_ROSTOS, "josehistoria.png")
+
+LARGURA_TELA, ALTURA_TELA = 1920, 1080
+COR_FUNDO = "#FFFFFF"
+COR_PRINCIPAL = "#1800AD"
+COR_TITULO_HISTORIA = "#FF751F"
+
+# Posição do olho esquerdo no joseacordado.png (imagem em 0,0) e destino ao ouvir "José"
+OLHO_ESQUERDO_INICIAL_X = 571.4
+OLHO_ESQUERDO_DESTINO_X = 108.0
+DURACAO_MOVIMENTO_MS = 300
+INTERVALO_ANIMACAO_MS = 16
+
+# Barra de progresso da história (coordenadas do canto superior esquerdo da bolinha)
+TAMANHO_BOLINHA = 65
+BOLINHA_INICIO = (164.6, 908.8)
+BOLINHA_FIM = (1617.0, 924.4)
+ESPESSURA_LINHA = 15
+INTERVALO_PROGRESSO_MS = 100
 
 DIRECOES = {"frente": "Frente", "tras": "Trás", "direita": "Direita", "esquerda": "Esquerda"}
 LADOS = {"direito": "Direito", "esquerdo": "Esquerdo"}
@@ -107,137 +137,206 @@ class OuvinteDeAudio:
             self.text_queue.put((texto, duracao_processamento, duracao_audio))
 
 
-OPCOES = [
-    "Me Segue",
-    "Vai pra (Frente/Trás/Direita/Esquerda)",
-    "Dê Meia Volta",
-    "Dê Volta Completa",
-    "Fica do Meu Lado (Direito/Esquerdo)",
-]
+def duracao_audio_segundos(caminho: str) -> float:
+    with av.open(caminho) as container:
+        return container.duration / av.time_base if container.duration else 0.0
+
+
+class PlayerDeHistorias:
+    """Toca uma lista sorteada de histórias (mp3) com pygame."""
+
+    def __init__(self, pasta: str):
+        self.arquivos = sorted(glob.glob(os.path.join(pasta, "*.mp3")))
+        self.playlist = []
+        self.indice = -1
+        self.duracao = 0.0
+        self.tocando = False
+        pygame.mixer.init()
+
+    def nova_playlist(self) -> bool:
+        self.playlist = random.sample(self.arquivos, len(self.arquivos))
+        self.indice = -1
+        return self.ir_para(0)
+
+    def ir_para(self, indice: int) -> bool:
+        if not 0 <= indice < len(self.playlist):
+            self.parar()
+            return False
+        self.indice = indice
+        caminho = self.playlist[indice]
+        self.duracao = duracao_audio_segundos(caminho)
+        pygame.mixer.music.load(caminho)
+        pygame.mixer.music.play()
+        self.tocando = True
+        return True
+
+    def proxima(self) -> bool:
+        return self.ir_para(self.indice + 1)
+
+    def anterior(self) -> bool:
+        return self.ir_para(self.indice - 1)
+
+    def parar(self):
+        self.tocando = False
+        pygame.mixer.music.stop()
+        pygame.mixer.music.unload()
+
+    def terminou(self) -> bool:
+        return self.tocando and not pygame.mixer.music.get_busy()
+
+    def progresso(self) -> float:
+        if self.duracao <= 0:
+            return 0.0
+        return min(max(pygame.mixer.music.get_pos() / 1000 / self.duracao, 0.0), 1.0)
+
+    def titulo(self) -> str:
+        return os.path.splitext(os.path.basename(self.playlist[self.indice]))[0]
 
 
 class AssistenteApp:
-    IDLE, ACORDADO, COMANDO, AGRADECIMENTO = "idle", "acordado", "comando", "agradecimento"
+    ACORDADO, TRANSICAO, OUVINDO, COMANDO, AGRADECIMENTO, HISTORIA = (
+        "acordado", "transicao", "ouvindo", "comando", "agradecimento", "historia"
+    )
 
     def __init__(self, root: tk.Tk, ouvinte: OuvinteDeAudio):
         self.root = root
         self.ouvinte = ouvinte
-        self.state = self.IDLE
+        self.state = self.ACORDADO
+        self.player = PlayerDeHistorias(PASTA_HISTORIAS)
+        self._geracao = 0  # invalida callbacks agendados de um estado anterior
 
         root.title("Assistente José")
-        root.geometry("700x500")
-        root.configure(bg="black")
+        root.geometry(f"{LARGURA_TELA}x{ALTURA_TELA}")
+        root.configure(bg=COR_FUNDO)
 
-        self._live_words = []
-        self.top_transcript = tk.Label(
-            root, text="", font=("Consolas", 12), bg="black", fg="gray", wraplength=680, justify="left", anchor="w"
+        self.canvas = tk.Canvas(
+            root, width=LARGURA_TELA, height=ALTURA_TELA, bg=COR_FUNDO, highlightthickness=0
         )
-        self.top_transcript.pack(side="top", fill="x", padx=10, pady=(5, 0))
-
-        self.bottom_frame = tk.Frame(root, bg="black")
-        self.bottom_frame.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
-        self.options_label = tk.Label(
-            self.bottom_frame,
-            text="\n".join(OPCOES),
-            font=("Consolas", 10),
-            bg="black",
-            fg="lightgray",
-            justify="left",
-            anchor="sw",
-        )
-        self.options_label.pack(side="left", anchor="sw")
-        self.speed_label = tk.Label(
-            self.bottom_frame,
-            text="",
-            font=("Consolas", 10),
-            bg="black",
-            fg="cyan",
-            justify="right",
-            anchor="se",
-        )
-        self.speed_label.pack(side="right", anchor="se")
-
-        self.idle_frame = tk.Frame(root, bg="black")
-        self.idle_label = tk.Label(
-            self.idle_frame,
-            text="Precisa de ajuda? Chame por José",
-            font=("Consolas", 28, "bold"),
-            bg="black",
-            fg="white",
-            justify="center",
-        )
-        self.idle_label.pack(expand=True, fill="x", padx=20, pady=(40, 20))
-        self.idle_frame.bind("<Configure>", self._atualizar_wraplength_idle)
-
-        self.canvas = tk.Canvas(root, width=700, height=500, bg="black", highlightthickness=0)
-        self.canvas.bind("<Configure>", self._redesenhar_canvas_ouvindo)
-        self._imagem_ouvindo_original = Image.open(CAMINHO_IMAGEM_OUVINDO)
-        self._imagem_ouvindo_tk = None
-
-        self.command_label = tk.Label(
-            root, text="", font=("Consolas", 26, "bold"), bg="black", fg="lightgreen", wraplength=650
-        )
-
-        self.thanks_label = tk.Label(
-            root, text="Ao seu dispor", font=("Consolas", 30, "bold"), bg="black", fg="white"
-        )
-
-        self._mostrar_idle()
-        self._poll_queue()
-
-    def _limpar_tela(self):
-        for widget in (self.idle_frame, self.canvas, self.command_label, self.thanks_label):
-            widget.pack_forget()
-
-    def _mostrar_idle(self):
-        self._limpar_tela()
-        self.idle_frame.pack(fill="both", expand=True)
-
-    def _mostrar_acordado(self):
-        self._limpar_tela()
         self.canvas.pack(fill="both", expand=True)
 
-    def _atualizar_wraplength_idle(self, event):
-        self.idle_label.config(wraplength=max(event.width - 40, 100))
+        self._img_acordado = ImageTk.PhotoImage(Image.open(IMG_ACORDADO))
+        self._img_ouvindo = ImageTk.PhotoImage(Image.open(IMG_OUVINDO))
+        self._img_historia = ImageTk.PhotoImage(Image.open(IMG_HISTORIA))
+        self.rosto = self.canvas.create_image(0, 0, image=self._img_acordado, anchor="nw")
 
-    def _redesenhar_canvas_ouvindo(self, event):
-        largura, altura = event.width, event.height
-        if largura <= 1 or altura <= 1:
-            return
-        self.canvas.delete("ouvindo")
-        max_largura = int(largura * 0.8)
-        max_altura = int(altura * 0.75)
-        if max_largura <= 0 or max_altura <= 0:
-            return
-        imagem = self._imagem_ouvindo_original.copy()
-        imagem.thumbnail((max_largura, max_altura), Image.Resampling.LANCZOS)  # mantém a proporção original
-        self._imagem_ouvindo_tk = ImageTk.PhotoImage(imagem)
-        self.canvas.create_image(largura / 2, altura * 0.4, image=self._imagem_ouvindo_tk, tags="ouvindo")
-        self.canvas.create_text(
-            largura / 2, altura * 0.85, text="estou ouvindo", fill="white", font=("Consolas", 22), tags="ouvindo"
+        self._live_words = []
+        self.transcricao = self.canvas.create_text(
+            10, 10, text="", anchor="nw", fill="gray", font=("Consolas", 12)
+        )
+        self.velocidade = self.canvas.create_text(
+            LARGURA_TELA - 10, ALTURA_TELA - 10, text="", anchor="se", fill="gray", font=("Consolas", 10)
         )
 
+        self._mostrar_acordado()
+        self._poll_queue()
+
+    def _novo_estado(self, estado: str):
+        self.state = estado
+        self._geracao += 1
+        self.canvas.delete("conteudo")
+        self.canvas.itemconfig(self.rosto, state="normal")
+
+    def _mostrar_rosto(self, imagem, x: float = 0):
+        self.canvas.itemconfig(self.rosto, image=imagem)
+        self.canvas.coords(self.rosto, x, 0)
+
+    def _mostrar_acordado(self):
+        self._novo_estado(self.ACORDADO)
+        self._mostrar_rosto(self._img_acordado)
+
+    def _iniciar_transicao_ouvindo(self):
+        self._novo_estado(self.TRANSICAO)
+        self._mostrar_rosto(self._img_acordado)
+        self._animar_movimento(time.perf_counter(), self._geracao)
+
+    def _animar_movimento(self, inicio: float, geracao: int):
+        if geracao != self._geracao:
+            return
+        fracao = min((time.perf_counter() - inicio) * 1000 / DURACAO_MOVIMENTO_MS, 1.0)
+        deslocamento = (OLHO_ESQUERDO_DESTINO_X - OLHO_ESQUERDO_INICIAL_X) * fracao
+        self.canvas.coords(self.rosto, deslocamento, 0)
+        if fracao < 1.0:
+            self.root.after(INTERVALO_ANIMACAO_MS, self._animar_movimento, inicio, geracao)
+        else:
+            self._mostrar_ouvindo()
+
+    def _mostrar_ouvindo(self):
+        self._novo_estado(self.OUVINDO)
+        self._mostrar_rosto(self._img_ouvindo)
+
     def _mostrar_comando(self, texto: str):
-        self._limpar_tela()
-        self.command_label.config(text=texto)
-        self.command_label.pack(fill="both", expand=True, padx=10, pady=10)
+        self._novo_estado(self.COMANDO)
+        self.canvas.itemconfig(self.rosto, state="hidden")
+        self.canvas.create_text(
+            LARGURA_TELA / 2, ALTURA_TELA / 2, text=texto, fill=COR_PRINCIPAL,
+            font=("Arial", 60, "bold"), width=LARGURA_TELA - 200, justify="center", tags="conteudo"
+        )
 
     def _mostrar_agradecimento(self):
-        self._limpar_tela()
-        self.thanks_label.pack(fill="both", expand=True)
-        self.root.after(3000, self._voltar_idle_apos_agradecimento)
+        self._novo_estado(self.AGRADECIMENTO)
+        self.canvas.itemconfig(self.rosto, state="hidden")
+        self.canvas.create_text(
+            LARGURA_TELA / 2, ALTURA_TELA / 2, text="Ao seu dispor", fill=COR_PRINCIPAL,
+            font=("Arial", 70, "bold"), tags="conteudo"
+        )
+        self.root.after(3000, self._voltar_acordado, self._geracao)
 
-    def _voltar_idle_apos_agradecimento(self):
-        if self.state == self.AGRADECIMENTO:
-            self.state = self.IDLE
-            self._mostrar_idle()
+    def _voltar_acordado(self, geracao: int):
+        if geracao == self._geracao:
+            self._mostrar_acordado()
+
+    def _iniciar_historias(self):
+        if not self.player.nova_playlist():
+            self._mostrar_acordado()
+            return
+        self._mostrar_historia_atual()
+
+    def _mostrar_historia_atual(self):
+        self._novo_estado(self.HISTORIA)
+        self._mostrar_rosto(self._img_historia)
+        raio = TAMANHO_BOLINHA / 2
+        (x0, y0), (x1, y1) = BOLINHA_INICIO, BOLINHA_FIM
+        self.canvas.create_line(
+            x0 + raio, y0 + raio, x1 + raio, y1 + raio,
+            fill=COR_PRINCIPAL, width=ESPESSURA_LINHA, capstyle="round", tags="conteudo"
+        )
+        self.canvas.create_text(
+            (x0 + x1) / 2 + raio, min(y0, y1) - 20, text=self.player.titulo(), anchor="s",
+            fill=COR_TITULO_HISTORIA, font=("Arial", 40, "bold"), tags="conteudo"
+        )
+        self.bolinha = self.canvas.create_oval(
+            x0, y0, x0 + TAMANHO_BOLINHA, y0 + TAMANHO_BOLINHA,
+            fill=COR_PRINCIPAL, outline=COR_PRINCIPAL, tags="conteudo"
+        )
+        self._atualizar_progresso(self._geracao)
+
+    def _atualizar_progresso(self, geracao: int):
+        if geracao != self._geracao:
+            return
+        if self.player.terminou():
+            self._trocar_historia(self.player.proxima())
+            return
+        p = self.player.progresso()
+        (x0, y0), (x1, y1) = BOLINHA_INICIO, BOLINHA_FIM
+        x, y = x0 + (x1 - x0) * p, y0 + (y1 - y0) * p
+        self.canvas.coords(self.bolinha, x, y, x + TAMANHO_BOLINHA, y + TAMANHO_BOLINHA)
+        self.root.after(INTERVALO_PROGRESSO_MS, self._atualizar_progresso, geracao)
+
+    def _trocar_historia(self, tocando: bool):
+        if tocando:
+            self._mostrar_historia_atual()
+        else:
+            self._mostrar_acordado()
+
+    def parar(self):
+        self.player.parar()
 
     def _atualizar_transcricao_topo(self, texto: str):
         for palavra in texto.split():
             if len(self._live_words) >= 7:
                 self._live_words = []
             self._live_words.append(palavra)
-        self.top_transcript.config(text=" ".join(self._live_words))
+        self.canvas.itemconfig(self.transcricao, text=" ".join(self._live_words))
 
     def _poll_queue(self):
         try:
@@ -252,31 +351,42 @@ class AssistenteApp:
 
     def _atualizar_velocidade(self, duracao_processamento: float, duracao_audio: float):
         rtf = duracao_processamento / duracao_audio if duracao_audio > 0 else 0
-        self.speed_label.config(
-            text=f"Processamento: {duracao_processamento:.2f}s | Áudio: {duracao_audio:.2f}s | RTF: {rtf:.2f}x"
+        self.canvas.itemconfig(
+            self.velocidade,
+            text=f"Processamento: {duracao_processamento:.2f}s | Áudio: {duracao_audio:.2f}s | RTF: {rtf:.2f}x",
         )
 
     def _processar_texto(self, texto: str):
         self._atualizar_transcricao_topo(texto)
         normalizado = normalizar(texto)
 
-        if self.state == self.IDLE:
+        if self.state == self.ACORDADO:
             if "jose" in normalizado:
-                self.state = self.ACORDADO
-                self._mostrar_acordado()
+                self._iniciar_transicao_ouvindo()
             return
 
-        if self.state == self.ACORDADO:
+        if self.state == self.OUVINDO:
+            if re.search(r"\bhistori", normalizado):
+                self._iniciar_historias()
+                return
             comando = identificar_comando(normalizado)
             if comando:
-                self.state = self.COMANDO
                 self._mostrar_comando(comando)
             return
 
         if self.state == self.COMANDO:
             if re.search(r"\bobrigad[oa]\b", normalizado):
-                self.state = self.AGRADECIMENTO
                 self._mostrar_agradecimento()
+            return
+
+        if self.state == self.HISTORIA:
+            if re.search(r"\b(parar|pare)\b", normalizado):
+                self.player.parar()
+                self._mostrar_acordado()
+            elif re.search(r"\bproxima\b", normalizado):
+                self._trocar_historia(self.player.proxima())
+            elif re.search(r"\bvolta(r)?\b", normalizado):
+                self._trocar_historia(self.player.anterior())
             return
 
 
@@ -286,10 +396,11 @@ def main():
     ouvinte.start()
 
     root = tk.Tk()
-    AssistenteApp(root, ouvinte)
+    app = AssistenteApp(root, ouvinte)
 
     def ao_fechar():
         ouvinte.stop()
+        app.parar()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", ao_fechar)
