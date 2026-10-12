@@ -18,8 +18,6 @@ pip install faster-whisper sounddevice numpy pillow pygame
 python jose.py
 ```
 
-The window opens in full screen (1920x1080, white background). Press `Esc` to leave full screen. If the screen is smaller than 1920x1080, everything is scaled down proportionally.
-
 # Repository structure
 
 | Path | Content |
