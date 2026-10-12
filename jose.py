@@ -1,6 +1,8 @@
 # pip install faster-whisper sounddevice numpy pillow pygame
+import ctypes
 import glob
 import os
+import sys
 import queue
 import random
 import re
@@ -31,6 +33,7 @@ PASTA_HISTORIAS = os.path.join(BASE_DIR, "historinhas")
 IMG_ACORDADO = os.path.join(PASTA_ROSTOS, "joseacordado.png")
 IMG_OUVINDO = os.path.join(PASTA_ROSTOS, "joseouvindo.png")
 IMG_HISTORIA = os.path.join(PASTA_ROSTOS, "josehistoria.png")
+IMG_FECHADO = os.path.join(PASTA_ROSTOS, "Josefechado.png")
 
 LARGURA_TELA, ALTURA_TELA = 1920, 1080
 COR_FUNDO = "#FFFFFF"
@@ -206,17 +209,24 @@ class AssistenteApp:
         self._geracao = 0  # invalida callbacks agendados de um estado anterior
 
         root.title("Assistente José")
-        root.geometry(f"{LARGURA_TELA}x{ALTURA_TELA}")
         root.configure(bg=COR_FUNDO)
+        root.attributes("-fullscreen", True)
+        root.bind("<Escape>", lambda _e: root.attributes("-fullscreen", False))
+
+        # As imagens são 1920x1080; só reduz se a tela real for menor, mantendo a proporção
+        self.escala = min(root.winfo_screenwidth() / LARGURA_TELA, root.winfo_screenheight() / ALTURA_TELA, 1.0)
+        self.largura = round(LARGURA_TELA * self.escala)
+        self.altura = round(ALTURA_TELA * self.escala)
 
         self.canvas = tk.Canvas(
-            root, width=LARGURA_TELA, height=ALTURA_TELA, bg=COR_FUNDO, highlightthickness=0
+            root, width=self.largura, height=self.altura, bg=COR_FUNDO, highlightthickness=0
         )
-        self.canvas.pack(fill="both", expand=True)
+        self.canvas.pack(expand=True)
 
-        self._img_acordado = ImageTk.PhotoImage(Image.open(IMG_ACORDADO))
-        self._img_ouvindo = ImageTk.PhotoImage(Image.open(IMG_OUVINDO))
-        self._img_historia = ImageTk.PhotoImage(Image.open(IMG_HISTORIA))
+        self._img_acordado = self._carregar_imagem(IMG_ACORDADO)
+        self._img_ouvindo = self._carregar_imagem(IMG_OUVINDO)
+        self._img_historia = self._carregar_imagem(IMG_HISTORIA)
+        self._img_fechado = self._carregar_imagem(IMG_FECHADO)
         self.rosto = self.canvas.create_image(0, 0, image=self._img_acordado, anchor="nw")
 
         self._live_words = []
@@ -224,11 +234,23 @@ class AssistenteApp:
             10, 10, text="", anchor="nw", fill="gray", font=("Consolas", 12)
         )
         self.velocidade = self.canvas.create_text(
-            LARGURA_TELA - 10, ALTURA_TELA - 10, text="", anchor="se", fill="gray", font=("Consolas", 10)
+            self.largura - 10, self.altura - 10, text="", anchor="se", fill="gray", font=("Consolas", 10)
         )
 
         self._mostrar_acordado()
         self._poll_queue()
+
+    def _s(self, valor: float) -> float:
+        return valor * self.escala
+
+    def _fonte(self, pixels: int):
+        return ("Arial", -max(round(pixels * self.escala), 1), "bold")
+
+    def _carregar_imagem(self, caminho: str):
+        imagem = Image.open(caminho)
+        if self.escala < 1.0:
+            imagem = imagem.resize((self.largura, self.altura), Image.Resampling.LANCZOS)
+        return ImageTk.PhotoImage(imagem)
 
     def _novo_estado(self, estado: str):
         self.state = estado
@@ -253,7 +275,7 @@ class AssistenteApp:
         if geracao != self._geracao:
             return
         fracao = min((time.perf_counter() - inicio) * 1000 / DURACAO_MOVIMENTO_MS, 1.0)
-        deslocamento = (OLHO_ESQUERDO_DESTINO_X - OLHO_ESQUERDO_INICIAL_X) * fracao
+        deslocamento = self._s(OLHO_ESQUERDO_DESTINO_X - OLHO_ESQUERDO_INICIAL_X) * fracao
         self.canvas.coords(self.rosto, deslocamento, 0)
         if fracao < 1.0:
             self.root.after(INTERVALO_ANIMACAO_MS, self._animar_movimento, inicio, geracao)
@@ -266,18 +288,19 @@ class AssistenteApp:
 
     def _mostrar_comando(self, texto: str):
         self._novo_estado(self.COMANDO)
-        self.canvas.itemconfig(self.rosto, state="hidden")
+        self._mostrar_rosto(self._img_fechado)
+        # Texto na faixa vazia acima dos olhos (que começam em y≈477 na imagem)
         self.canvas.create_text(
-            LARGURA_TELA / 2, ALTURA_TELA / 2, text=texto, fill=COR_PRINCIPAL,
-            font=("Arial", 60, "bold"), width=LARGURA_TELA - 200, justify="center", tags="conteudo"
+            self.largura / 2, self._s(240), text=texto, fill=COR_PRINCIPAL,
+            font=self._fonte(80), width=self.largura - self._s(200), justify="center", tags="conteudo"
         )
 
     def _mostrar_agradecimento(self):
         self._novo_estado(self.AGRADECIMENTO)
         self.canvas.itemconfig(self.rosto, state="hidden")
         self.canvas.create_text(
-            LARGURA_TELA / 2, ALTURA_TELA / 2, text="Ao seu dispor", fill=COR_PRINCIPAL,
-            font=("Arial", 70, "bold"), tags="conteudo"
+            self.largura / 2, self.altura / 2, text="Ao seu dispor", fill=COR_PRINCIPAL,
+            font=self._fonte(93), tags="conteudo"
         )
         self.root.after(3000, self._voltar_acordado, self._geracao)
 
@@ -294,21 +317,24 @@ class AssistenteApp:
     def _mostrar_historia_atual(self):
         self._novo_estado(self.HISTORIA)
         self._mostrar_rosto(self._img_historia)
-        raio = TAMANHO_BOLINHA / 2
-        (x0, y0), (x1, y1) = BOLINHA_INICIO, BOLINHA_FIM
+        raio = self._s(TAMANHO_BOLINHA / 2)
+        (x0, y0), (x1, y1) = self._posicoes_bolinha()
         self.canvas.create_line(
             x0 + raio, y0 + raio, x1 + raio, y1 + raio,
-            fill=COR_PRINCIPAL, width=ESPESSURA_LINHA, capstyle="round", tags="conteudo"
+            fill=COR_PRINCIPAL, width=self._s(ESPESSURA_LINHA), capstyle="round", tags="conteudo"
         )
         self.canvas.create_text(
-            (x0 + x1) / 2 + raio, min(y0, y1) - 20, text=self.player.titulo(), anchor="s",
-            fill=COR_TITULO_HISTORIA, font=("Arial", 40, "bold"), tags="conteudo"
+            (x0 + x1) / 2 + raio, min(y0, y1) - self._s(20), text=self.player.titulo(), anchor="s",
+            fill=COR_TITULO_HISTORIA, font=self._fonte(53), tags="conteudo"
         )
         self.bolinha = self.canvas.create_oval(
-            x0, y0, x0 + TAMANHO_BOLINHA, y0 + TAMANHO_BOLINHA,
+            x0, y0, x0 + 2 * raio, y0 + 2 * raio,
             fill=COR_PRINCIPAL, outline=COR_PRINCIPAL, tags="conteudo"
         )
         self._atualizar_progresso(self._geracao)
+
+    def _posicoes_bolinha(self):
+        return tuple((self._s(x), self._s(y)) for x, y in (BOLINHA_INICIO, BOLINHA_FIM))
 
     def _atualizar_progresso(self, geracao: int):
         if geracao != self._geracao:
@@ -317,9 +343,10 @@ class AssistenteApp:
             self._trocar_historia(self.player.proxima())
             return
         p = self.player.progresso()
-        (x0, y0), (x1, y1) = BOLINHA_INICIO, BOLINHA_FIM
+        (x0, y0), (x1, y1) = self._posicoes_bolinha()
         x, y = x0 + (x1 - x0) * p, y0 + (y1 - y0) * p
-        self.canvas.coords(self.bolinha, x, y, x + TAMANHO_BOLINHA, y + TAMANHO_BOLINHA)
+        tamanho = self._s(TAMANHO_BOLINHA)
+        self.canvas.coords(self.bolinha, x, y, x + tamanho, y + tamanho)
         self.root.after(INTERVALO_PROGRESSO_MS, self._atualizar_progresso, geracao)
 
     def _trocar_historia(self, tocando: bool):
@@ -357,6 +384,7 @@ class AssistenteApp:
         )
 
     def _processar_texto(self, texto: str):
+        print(f"Ouvido: {texto}", flush=True)
         self._atualizar_transcricao_topo(texto)
         normalizado = normalizar(texto)
 
@@ -395,6 +423,9 @@ def main():
     ouvinte = OuvinteDeAudio(model)
     ouvinte.start()
 
+    if sys.platform == "win32":
+        # Evita que o Windows amplie a janela pela escala de exibição (125%, 150%...)
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
     root = tk.Tk()
     app = AssistenteApp(root, ouvinte)
 
