@@ -18,7 +18,7 @@ pip install faster-whisper sounddevice numpy pillow pygame
 python jose.py
 ```
 
-The window opens in full screen (1920x1080, white background). Press `Esc` to leave full screen. If the screen is smaller than 1920x1080, everything is scaled down proportionally. Every recognized sentence is printed in the terminal as `Ouvido: <text>`.
+The window opens in full screen (1920x1080, white background). Press `Esc` to leave full screen. If the screen is smaller than 1920x1080, everything is scaled down proportionally.
 
 # Repository structure
 
@@ -44,7 +44,7 @@ The window opens in full screen (1920x1080, white background). Press `Esc` to le
 
 Say **"História"** while José is listening. A new random order of all stories in `historinhas/` is drawn each time the mode is activated, and the stories play one after another from start to end.
 
-The screen shows `josehistoria.png`, the story title in bold orange (`#FF751F`) and a progress bar: a 65x65 ball (`#1800AD`) moving along a 15 px line from (164.6, 908.8) to (1617, 924.4).
+The screen shows `josehistoria.png`, the story title in bold orange (`#FF751F`) and a progress bar: a 65x65 ball (`#1800AD`) moving along a 15 px line from (164.6, 908.8) to (1617, 908.8).
 
 Voice commands during a story:
 

@@ -49,7 +49,7 @@ INTERVALO_ANIMACAO_MS = 16
 # Barra de progresso da história (coordenadas do canto superior esquerdo da bolinha)
 TAMANHO_BOLINHA = 65
 BOLINHA_INICIO = (164.6, 908.8)
-BOLINHA_FIM = (1617.0, 924.4)
+BOLINHA_FIM = (1617.0, 908.8)
 ESPESSURA_LINHA = 15
 INTERVALO_PROGRESSO_MS = 100
 
@@ -384,7 +384,6 @@ class AssistenteApp:
         )
 
     def _processar_texto(self, texto: str):
-        print(f"Ouvido: {texto}", flush=True)
         self._atualizar_transcricao_topo(texto)
         normalizado = normalizar(texto)
 
