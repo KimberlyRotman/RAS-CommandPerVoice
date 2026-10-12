@@ -50,7 +50,7 @@ Voice commands during a story:
 
 | Command | Action |
 | --- | --- |
-| "Parar" / "Pare" | Stops the story and returns to the awake face |
+| "Para" / "Parar" / "Pare" | Stops the story and returns to the awake face |
 | "Próxima" | Skips to the next story |
 | "Volta" / "Voltar" | Goes back to the previous story |
 

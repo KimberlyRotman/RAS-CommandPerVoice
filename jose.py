@@ -118,8 +118,11 @@ class OuvinteDeAudio:
             self._stream.close()
 
     def _process_loop(self):
+        proxima_leitura = time.monotonic() + self.chunk_seconds
         while self._running.is_set():
-            time.sleep(self.chunk_seconds)
+            # Desconta o tempo gasto transcrevendo, senão cada bloco fica maior e mais lento que o anterior
+            time.sleep(max(0.0, proxima_leitura - time.monotonic()))
+            proxima_leitura = time.monotonic() + self.chunk_seconds
             with self._lock:
                 if not self._buffer:
                     continue
@@ -407,7 +410,8 @@ class AssistenteApp:
             return
 
         if self.state == self.HISTORIA:
-            if re.search(r"\b(parar|pare)\b", normalizado):
+            # "para" só vale no fim da frase ("Para!"), para não disparar com "voltou para casa"
+            if re.search(r"\b(parar|pare)\b|\bpara\b\s*(?:[.!?,]|$)", normalizado):
                 self.player.parar()
                 self._mostrar_acordado()
             elif re.search(r"\bproxima\b", normalizado):
